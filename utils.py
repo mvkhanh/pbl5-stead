@@ -48,3 +48,4 @@ class DECOUPLED(nn.Module):
         x = self.conv1d(x)
         x = x.view(B, T, H, W, C)
         return x
+    

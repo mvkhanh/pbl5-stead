@@ -2,6 +2,8 @@ import argparse
 
 def parse_args():
     parser = argparse.ArgumentParser(description='STEAD')
+    parser.add_argument('server_ip', type=str, help="Địa chỉ IP của server")
+    parser.add_argument('port', type=int, help="Số cổng")
     parser.add_argument('--rgb_list', default='ucf_x3d_train.txt', help='list of rgb features ')
     parser.add_argument('--test_rgb_list', default='ucf_x3d_test.txt', help='list of test rgb features ')
 
