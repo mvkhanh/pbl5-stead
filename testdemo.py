@@ -1,244 +1,279 @@
-# import cv2
-# import torch
-# import numpy as np
-# import threading
-# import queue
-# import os
-# from time import time, sleep
-# from torchvision.transforms import CenterCrop, Normalize, Compose, Lambda
-# from pytorchvideo.transforms import ApplyTransformToKey, ShortSideScale
-# from skimage.metrics import structural_similarity as ssim
-# from model import Model  
+import cv2
+import torch
+import numpy as np
+import threading
+import queue
+import os
+from time import time, sleep
+from torchvision.transforms import CenterCrop, Normalize, Compose, Lambda
+from pytorchvideo.transforms import ApplyTransformToKey, ShortSideScale
+from skimage.metrics import structural_similarity as ssim
+from model import Model
+from consecutive_detector import ConsecutiveDetector  
 
 
-# DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# feat_model_name = 'x3d_l'
-# feat_model = torch.hub.load('facebookresearch/pytorchvideo', feat_model_name, pretrained=True)
-# feat_model = feat_model.eval()
-# feat_model = feat_model.to(DEVICE)
-# del feat_model.blocks[-1]  
+feat_model_name = 'x3d_l'
+feat_model = torch.hub.load('facebookresearch/pytorchvideo', feat_model_name, pretrained=True)
+feat_model = feat_model.eval()
+feat_model = feat_model.to(DEVICE)
+del feat_model.blocks[-1]  
 
-# mean = [0.45, 0.45, 0.45]
-# std = [0.225, 0.225, 0.225]
-# model_transform_params = {
-#     "x3d_xs": {"side_size": 182, 
-#         "crop_size": 182, 
-#         "num_frames": 4, 
-#         "sampling_rate": 12},
-#     "x3d_s": {"side_size": 182, 
-#         "crop_size": 182, 
-#         "num_frames": 13, 
-#         "sampling_rate": 6},
-#     "x3d_m": {"side_size": 256, 
-#         "crop_size": 256, 
-#         "num_frames": 16, 
-#         "sampling_rate": 5},
-#     "x3d_l": {"side_size": 320, 
-#         "crop_size": 320, 
-#         "num_frames": 16, 
-#         "sampling_rate": 5},
-# }
-
-
-# transform_params = model_transform_params[feat_model_name]
-# transform = ApplyTransformToKey(
-#     key="video",
-#     transform=Compose(
-#         [
-#             Lambda(lambda x: x / 255.0),
-#             Normalize(mean, std),
-#             ShortSideScale(size=transform_params["side_size"]),
-#             CenterCrop((transform_params["crop_size"], transform_params["crop_size"])),
-#             Lambda(lambda x: x.permute((1, 0, 2, 3)))
-#         ]
-#     ),
-# )
+mean = [0.45, 0.45, 0.45]
+std = [0.225, 0.225, 0.225]
+model_transform_params = {
+    "x3d_xs": {"side_size": 182, 
+        "crop_size": 182, 
+        "num_frames": 4, 
+        "sampling_rate": 12},
+    "x3d_s": {"side_size": 182, 
+        "crop_size": 182, 
+        "num_frames": 13, 
+        "sampling_rate": 6},
+    "x3d_m": {"side_size": 256, 
+        "crop_size": 256, 
+        "num_frames": 16, 
+        "sampling_rate": 5},
+    "x3d_l": {"side_size": 320, 
+        "crop_size": 320, 
+        "num_frames": 16, 
+        "sampling_rate": 5},
+}
 
 
-# CHECKPOINT_PATH = "saved_models/888tiny.pkl"  
-# THRESHOLD = 0.6934
-# FRAME_COUNT = 16  
-# SIMILARITY_THRESHOLD = 0.7
+transform_params = model_transform_params[feat_model_name]
+transform = ApplyTransformToKey(
+    key="video",
+    transform=Compose(
+        [
+            Lambda(lambda x: x / 255.0),
+            Normalize(mean, std),
+            ShortSideScale(size=transform_params["side_size"]),
+            CenterCrop((transform_params["crop_size"], transform_params["crop_size"])),
+            Lambda(lambda x: x.permute((1, 0, 2, 3)))
+        ]
+    ),
+)
 
 
-# process_queue = queue.Queue(maxsize=FRAME_COUNT * 3)
-# result_queue = queue.Queue(maxsize=100)
-# pause_event = threading.Event()
+CHECKPOINT_PATH = "saved_models/888tiny.pkl"  
+THRESHOLD = 0.6934
+FRAME_COUNT = 16  
+SIMILARITY_THRESHOLD = 0.7
+CONSECUTIVE_REQUIRED = 5  # so batch lien tiep can de pham phap
 
-# def load_checkpoint(model, checkpoint_path):
-#     checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
-#     model.load_state_dict(checkpoint, strict=False)  # load state_dict
-#     print("Load successfully!")
 
-# def draw_text_overlay(frame, text, org, font=cv2.FONT_HERSHEY_SIMPLEX, 
-#                       font_scale=2.0, text_color=(255, 255, 255), 
-#                       bg_color=(0, 0, 0), thickness=3, padding=5, alpha=0.6):
-#     overlay = frame.copy()
-#     (w, h), _ = cv2.getTextSize(text, font, font_scale, thickness)
-#     x, y = org
-#     cv2.rectangle(overlay, (x - padding, y - h - padding), (x + w + padding, y + padding), bg_color, -1)
-#     cv2.putText(overlay, text, (x, y), font, font_scale, text_color, thickness, cv2.LINE_AA)
-#     cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+process_queue = queue.Queue(maxsize=FRAME_COUNT * 3)
+result_queue = queue.Queue(maxsize=100)
+pause_event = threading.Event()
 
-# def video_to_tensor(frames):
-#     frames = np.stack([frame[0] for frame in frames], axis=0)  # Shape: (num_frames, H, W, 3)
-#     tensor = torch.from_numpy(frames).permute(0, 3, 1, 2).float()  # Shape: (num_frames, 3, H, W)
-#     return tensor
+def load_checkpoint(model, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+    model.load_state_dict(checkpoint, strict=False)  # load state_dict
+    print("Load successfully!")
 
-# def read_and_display_video(video_path):
-#     cap = cv2.VideoCapture(video_path)
-#     frame_index = 0
-#     prev_frame = None
-#     batch_index = 0
-#     results_map = {}  # Lưu kết quả theo batch_index
-#     cv2.namedWindow("Anomaly Detection", cv2.WINDOW_NORMAL)
-#     cv2.resizeWindow("Anomaly Detection", 1024, 768)
+def draw_text_overlay(frame, text, org, font=cv2.FONT_HERSHEY_SIMPLEX, 
+                      font_scale=2.0, text_color=(255, 255, 255), 
+                      bg_color=(0, 0, 0), thickness=3, padding=5, alpha=0.6):
+    overlay = frame.copy()
+    (w, h), _ = cv2.getTextSize(text, font, font_scale, thickness)
+    x, y = org
+    cv2.rectangle(overlay, (x - padding, y - h - padding), (x + w + padding, y + padding), bg_color, -1)
+    cv2.putText(overlay, text, (x, y), font, font_scale, text_color, thickness, cv2.LINE_AA)
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
-#     while cap.isOpened():
-#         if pause_event.is_set():
-#             key = cv2.waitKey(30) & 0xFF
-#             if key == ord('p'):
-#                 pause_event.clear()
-#                 print("Resume")
-#             elif key == ord('q'):
-#                 break
-#             continue
+def video_to_tensor(frames):
+    frames = np.stack([frame[0] for frame in frames], axis=0)  # Shape: (num_frames, H, W, 3)
+    tensor = torch.from_numpy(frames).permute(0, 3, 1, 2).float()  # Shape: (num_frames, 3, H, W)
+    return tensor
 
-#         ret, frame = cap.read()
-#         if not ret:
-#             break
+def read_and_display_video(video_path):
+    cap = cv2.VideoCapture(video_path)
+    frame_index = 0
+    prev_frame = None
+    batch_index = 0
+    results_map = {}  
+    detector = ConsecutiveDetector(THRESHOLD, CONSECUTIVE_REQUIRED)
+    
+    cv2.namedWindow("Anomaly Detection", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Anomaly Detection", 1024, 768)
 
-#         frame_added = False
-#         if prev_frame is not None:
-#             gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-#             gray_current = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-#             score = ssim(gray_prev, gray_current)
-#             if score >= SIMILARITY_THRESHOLD:
-#                 try:
-#                     process_queue.put_nowait((frame, frame_index))
-#                     frame_added = True
-#                 except queue.Full:
-#                     pass
-#         else:
-#             try:
-#                 process_queue.put_nowait((frame, frame_index))
-#                 frame_added = True
-#             except queue.Full:
-#                 pass
+    while cap.isOpened():
+        if pause_event.is_set():
+            key = cv2.waitKey(30) & 0xFF
+            if key == ord('p'):
+                pause_event.clear()
+                print("Resume")
+            elif key == ord('q'):
+                break
+            continue
 
-#         prev_frame = frame
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_added = False
+        if prev_frame is not None:
+            gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+            gray_current = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            score = ssim(gray_prev, gray_current)
+            if score >= SIMILARITY_THRESHOLD:
+                try:
+                    process_queue.put_nowait((frame, frame_index))
+                    frame_added = True
+                except queue.Full:
+                    pass
+        else:
+            try:
+                process_queue.put_nowait((frame, frame_index))
+                frame_added = True
+            except queue.Full:
+                pass
+
+        prev_frame = frame
         
        
-#         while not result_queue.empty():
-#             try:
-#                 batch_idx, prob = result_queue.get_nowait()
-#                 results_map[batch_idx] = prob
-#             except queue.Empty:
-#                 break
+        new_results = False
+        while not result_queue.empty():
+            try:
+                batch_idx, prob = result_queue.get_nowait()
+                results_map[batch_idx] = prob
+                detector.update(batch_idx, prob)
+                new_results = True
+             
+            except queue.Empty:
+                break
         
-      
-#         current_batch = frame_index // FRAME_COUNT
-#         current_result = None
+        # Xác định batch hiện tại
+        current_batch = frame_index // FRAME_COUNT
+        current_result = None
         
+        # Tìm kết quả gần nhất
+        for i in range(current_batch, -1, -1):
+            if i in results_map:
+                current_result = results_map[i]
+                break
         
-#         for i in range(current_batch, -1, -1):
-#             if i in results_map:
-#                 current_result = results_map[i]
-#                 break
+        # Lấy trạng thái hiện tại từ detector
+        anomaly_status, consecutive_count = detector.get_status()
         
+       
         
-#         if current_result is not None:
-#             if current_result > THRESHOLD:
-#                 color = (0, 0, 255)
-#                 status = "Khong binh thuong"
-#             else:
-#                 color = (0, 255, 0)
-#                 status = "Binh thuong"
-#             anomaly_text = f"Batch: {current_batch} | Prob: {current_result:.4f} | {status}"
-#             cv2.rectangle(frame, (0, 0), (frame.shape[1]-2, frame.shape[0]-2), color, 2)
-#             draw_text_overlay(frame, anomaly_text, (10, 20), font_scale=0.4, thickness=1, alpha=0.6, text_color=color)
-#         else:
-#             draw_text_overlay(frame, f"Batch: {current_batch} | Calculating...", (10, 20), 
-#                               font_scale=0.4, thickness=1, alpha=0.6, text_color=(255, 255, 0))
+        if current_result is not None:
+            if anomaly_status:
+                color = (0, 0, 255)  # Đỏ
+                status = "PHAM PHAP"
+                status_detail = f"({consecutive_count} batch lien tiep)"
+            else:
+                if current_result > THRESHOLD:
+                    color = (0, 165, 255)  # Cam (cảnh báo)
+                    status = "CANH BAO"
+                    status_detail = f"({consecutive_count}/{CONSECUTIVE_REQUIRED})"
+                else:
+                    color = (0, 255, 0)  # Xanh lá
+                    status = "BINH THUONG"
+                    status_detail = ""
+            
+     
+            cv2.rectangle(frame, (0, 0), (frame.shape[1]-2, frame.shape[0]-2), color, 2)
+            
+            
+            main_text = f"Batch: {current_batch} | Prob: {current_result:.4f} | {status}"
+            draw_text_overlay(frame, main_text, (10, 20), font_scale=0.4, thickness=1, alpha=0.6, text_color=color)
+            
+           
+            if status_detail:
+                draw_text_overlay(frame, status_detail, (10, 45), font_scale=0.3, thickness=1, alpha=0.6, text_color=color)
+        else:
+           
+            anomaly_status, consecutive_count = detector.get_status()
+            color = (255, 255, 0)  # Vàng
+            draw_text_overlay(frame, f"Batch: {current_batch} | Calculating...", (10, 20), 
+                              font_scale=0.4, thickness=1, alpha=0.6, text_color=color)
 
-#         if frame_added:
-#             frame_index += 1
-#             if frame_index % FRAME_COUNT == 0:
-#                 batch_index += 1
+       
+        if frame_added:
+            frame_index += 1
+            if frame_index % FRAME_COUNT == 0:
+                batch_index += 1
         
-#         cv2.imshow("Anomaly Detection", frame)
-#         key = cv2.waitKey(30) & 0xFF
-#         if key == ord('q'):
-#             break
-#         elif key == ord('p'):
-#             pause_event.set()
-#             print("Paused")
+        cv2.imshow("Anomaly Detection", frame)
+        key = cv2.waitKey(30) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('p'):
+            pause_event.set()
+            print("Paused")
 
-#     cap.release()
-#     process_queue.put((None, -1)) 
-#     cv2.destroyAllWindows()
+    cap.release()
+    process_queue.put((None, -1)) 
+    cv2.destroyAllWindows()
 
-# def process_inference(feat_model, model):
-#     batch_frames = []
-#     current_batch_index = 0
+def process_inference(feat_model, model):
+    batch_frames = []
+    current_batch_index = 0
     
-#     while True:
-#         if pause_event.is_set():
-#             sleep(0.1)
-#             continue
+    while True:
+        if pause_event.is_set():
+            sleep(0.1)
+            continue
 
-#         item = process_queue.get()
-#         if item[0] is None: 
-#             break
+        item = process_queue.get()
+        if item[0] is None: 
+            break
 
-#         frame, frame_index = item
-#         batch_frames.append((frame, frame_index))
+        frame, frame_index = item
+        batch_frames.append((frame, frame_index))
         
-#         if len(batch_frames) >= FRAME_COUNT:
+        if len(batch_frames) >= FRAME_COUNT:
             
-#             batch_idx = batch_frames[0][1] // FRAME_COUNT
+            batch_idx = batch_frames[0][1] // FRAME_COUNT
             
-#             tensor = video_to_tensor(batch_frames).to(DEVICE)
-#             t_transform = transform({'video': tensor})['video']
+            tensor = video_to_tensor(batch_frames).to(DEVICE)
+            t_transform = transform({'video': tensor})['video']
             
-#             with torch.no_grad():
-#                 start_time = time()          
-#                 features = feat_model(t_transform.unsqueeze(0))              
-#                 logits, _ = model(features)
-#                 output = torch.sigmoid(logits).item()
-#                 print(f"Batch {batch_idx}: Prob {output:.4f}, Processing time: {time() - start_time:.3f}s")
-            
-            
-#             result_queue.put((batch_idx, output))
+            with torch.no_grad():
+                start_time = time()          
+                features = feat_model(t_transform.unsqueeze(0))              
+                logits, _ = model(features)
+                output = torch.sigmoid(logits).item()
+                print(f"Batch {batch_idx}: Prob {output:.4f}, Processing time: {time() - start_time:.3f}s")
             
             
-#             batch_frames.clear()
-#             current_batch_index += 1
+            result_queue.put((batch_idx, output))
+            
+            
+            batch_frames.clear()
+            current_batch_index += 1
 
-# if __name__ == '__main__':
+if __name__ == '__main__':
     
-#     model = Model().to(DEVICE)  
-#     if os.path.exists(CHECKPOINT_PATH):
-#         print("Load checkpoint")
-#         load_checkpoint(model, CHECKPOINT_PATH)
-#     else:
-#         print("Khong load checkpoint duoc")
-#     model.eval()
+    model = Model().to(DEVICE)  
+    if os.path.exists(CHECKPOINT_PATH):
+        print("Load checkpoint")
+        load_checkpoint(model, CHECKPOINT_PATH)
+    else:
+        print("Khong load checkpoint duoc")
+    model.eval()
 
-#     if torch.cuda.is_available():
-#         torch.backends.cudnn.benchmark = True
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
 
-#     video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Abuse\Abuse001_x264.mp4" 
-#     # video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Abuse\Abuse001_x264.mp4"  
-#     # video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Assault\Assault003_x264.mp4" 
-#     # video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Assault\Assault045_x264.mp4" 
-#     # video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Assault\Assault031_x264.mp4" 
-#     thread_display = threading.Thread(target=read_and_display_video, args=(video_path,))
-#     thread_inference = threading.Thread(target=process_inference, args=(feat_model, model))
+    print(f"Consecutive batches required for anomaly detection: {CONSECUTIVE_REQUIRED}")
+    print(f"Threshold: {THRESHOLD}")
+    print("Controls: 'p' to pause/resume, 'q' to quit")
 
-#     thread_display.start()
-#     thread_inference.start()
+    video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Abuse\Abuse001_x264.mp4" 
+    # video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Abuse\Abuse001_x264.mp4"  
+    # video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Assault\Assault003_x264.mp4" 
+    # video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Assault\Assault045_x264.mp4" 
+    # video_path = r"D:\Downloads\Anomaly-Videos-Part-1\Assault\Assault031_x264.mp4" 
+    thread_display = threading.Thread(target=read_and_display_video, args=(video_path,))
+    thread_inference = threading.Thread(target=process_inference, args=(feat_model, model))
 
-#     thread_display.join()
-#     thread_inference.join()
+    thread_display.start()
+    thread_inference.start()
+
+    thread_display.join()
+    thread_inference.join()

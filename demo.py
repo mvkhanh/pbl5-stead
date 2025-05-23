@@ -15,7 +15,6 @@ from pytorchvideo.transforms import ApplyTransformToKey, ShortSideScale
 from skimage.metrics import structural_similarity as ssim
 from model import Model
 
-
 from option import parse_args
 args = parse_args()
 SERVER_IP = args.server_ip
@@ -23,17 +22,14 @@ PORT = args.port
 print(SERVER_IP)
 print(PORT)
 
-
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
-
 
 feat_model_name = 'x3d_l'
 feat_model = torch.hub.load('facebookresearch/pytorchvideo', feat_model_name, pretrained=True)
 feat_model = feat_model.eval()
 feat_model = feat_model.to(DEVICE)
 del feat_model.blocks[-1]  
-
 
 mean = [0.45, 0.45, 0.45]
 std = [0.225, 0.225, 0.225]
@@ -58,18 +54,17 @@ transform = ApplyTransformToKey(
     ),
 )
 
-
 CHECKPOINT_PATH = "saved_models/888tiny.pkl"  
 THRESHOLD = 0.6934
 FRAME_COUNT = 16  
 SIMILARITY_THRESHOLD = 0.7
-
+CONSECUTIVE_REQUIRED = 3  # Số batch liên tiếp cần thiết để phát hiện phạm pháp
 
 process_queue = queue.Queue(maxsize=FRAME_COUNT * 3)
 result_queue = queue.Queue(maxsize=100)
 pause_event = threading.Event()
 
-#UDP
+# UDP
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((SERVER_IP, PORT))
 print(f"📡 Listening for UDP video at {SERVER_IP}:{PORT}...")
@@ -77,6 +72,70 @@ print(f"📡 Listening for UDP video at {SERVER_IP}:{PORT}...")
 buffer = {}
 expected_packets = {}
 received_packets = {}
+
+class ConsecutiveDetector:
+    def __init__(self, threshold, consecutive_required):
+        self.threshold = threshold
+        self.consecutive_required = consecutive_required
+        self.consecutive_count = 0
+        self.last_batch_idx = -1
+        self.anomaly_detected = False
+        self.recent_results = []  
+        self.total_processed = 0
+        
+    def update(self, batch_idx, prob):
+        self.total_processed += 1
+        
+        if self.last_batch_idx == -1 or batch_idx == self.last_batch_idx + 1:
+            if prob > self.threshold:
+                self.consecutive_count += 1
+            else:
+                if self.consecutive_count > 0:
+                    self.consecutive_count = 0
+                
+                if len(self.recent_results) >= 2 and all(r <= self.threshold for r in self.recent_results[-2:]):
+                    self.anomaly_detected = False
+        else:
+            self.consecutive_count = 0 if prob <= self.threshold else 1
+            self.anomaly_detected = False
+            
+        if self.consecutive_count >= self.consecutive_required:
+            self.anomaly_detected = True
+        
+        self.recent_results.append(prob)
+        if len(self.recent_results) > 10:
+            self.recent_results.pop(0)
+            
+        self.last_batch_idx = batch_idx
+        
+    def get_status(self):
+        return self.anomaly_detected, self.consecutive_count
+    
+    def get_detailed_status(self):
+        return {
+            'anomaly_detected': self.anomaly_detected,
+            'consecutive_count': self.consecutive_count,
+            'consecutive_required': self.consecutive_required,
+            'threshold': self.threshold,
+            'last_batch_idx': self.last_batch_idx,
+            'total_processed': self.total_processed,
+            'recent_results': self.recent_results.copy()
+        }
+    
+    def reset(self):
+        self.consecutive_count = 0
+        self.last_batch_idx = -1
+        self.anomaly_detected = False
+        self.recent_results.clear()
+        self.total_processed = 0
+    
+    def set_threshold(self, new_threshold):
+        self.threshold = new_threshold
+    
+    def set_consecutive_required(self, new_required):
+        self.consecutive_required = new_required
+
+detector = ConsecutiveDetector(THRESHOLD, CONSECUTIVE_REQUIRED)
 
 def load_checkpoint(model, checkpoint_path):
     checkpoint = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
@@ -106,7 +165,6 @@ def receive_and_display_video():
 
     print("Waiting for first UDP packet...")
     while True:
-       
         packet, addr = sock.recvfrom(65535)
         print(f"Received packet from addr: {addr}")
         if not isinstance(addr, tuple) or len(addr) != 2:
@@ -116,14 +174,12 @@ def receive_and_display_video():
             print(f"Invalid packet size: {len(packet)} bytes, skipping...")
             continue
 
-       
         if not window_initialized:
             print("Received first UDP packet, initializing video window...")
             cv2.namedWindow("Anomaly Detection", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("Anomaly Detection", 1024, 768)
             window_initialized = True
 
-      
         i, total = struct.unpack('!II', packet[:8])
         data = packet[8:]
 
@@ -137,12 +193,10 @@ def receive_and_display_video():
             buffer[buffer_key][i] = data
             received_packets[buffer_key] += 1
 
-       
         if received_packets[buffer_key] == expected_packets[buffer_key]:
             chunks = [buffer[buffer_key][j] for j in range(total)]
             image_data = b''.join(chunks)
 
-         
             try:
                 stream = io.BytesIO(image_data)
                 image = Image.open(stream)
@@ -157,7 +211,6 @@ def receive_and_display_video():
                     del received_packets[buffer_key]
                 continue
 
-          
             frame_added = False
             try:
                 process_queue.put_nowait((frame, frame_index))
@@ -170,40 +223,39 @@ def receive_and_display_video():
                 try:
                     batch_idx, prob = result_queue.get_nowait()
                     results_map[batch_idx] = prob
+                    detector.update(batch_idx, prob)
                 except queue.Empty:
                     break
             
-          
             current_batch = frame_index // FRAME_COUNT
-            current_result = None
             
-            for i in range(current_batch, -1, -1):
-                if i in results_map:
-                    current_result = results_map[i]
-                    break
+            anomaly_detected, consecutive_count = detector.get_status()
             
-      
-            if current_result is not None:
-                if current_result > THRESHOLD:
-                    color = (0, 0, 255) 
-                    status = "Khong binh thuong"
-                else:
-                    color = (0, 255, 0)  
-                    status = "Binh thuong"
-                anomaly_text = f"Batch: {current_batch} | Prob: {current_result:.4f} | {status}"
-                cv2.rectangle(frame, (0, 0), (frame.shape[1]-2, frame.shape[0]-2), color, 2)
-                draw_text_overlay(frame, anomaly_text, (10, 20), font_scale=0.4, thickness=1, alpha=0.6, text_color=color)
+            if anomaly_detected:
+                color = (0, 0, 255)
+                status = "Khong binh thuong"
+                anomaly_text = f"Batch: {current_batch} | Consecutive: {consecutive_count}/{CONSECUTIVE_REQUIRED} | {status}"
             else:
-                draw_text_overlay(frame, f"Batch: {current_batch} | Calculating...", (10, 20), 
-                                font_scale=0.4, thickness=1, alpha=0.6, text_color=(255, 255, 0))
+                color = (0, 255, 0)
+                status = "Binh thuong"
+                if consecutive_count > 0:
+                    anomaly_text = f"Batch: {current_batch} | Consecutive: {consecutive_count}/{CONSECUTIVE_REQUIRED} | Watching..."
+                else:
+                    anomaly_text = f"Batch: {current_batch} | {status}"
+            
+            cv2.rectangle(frame, (0, 0), (frame.shape[1]-2, frame.shape[0]-2), color, 2)
+            draw_text_overlay(frame, anomaly_text, (10, 20), font_scale=0.4, thickness=1, alpha=0.6, text_color=color)
+            
+            detail_status = detector.get_detailed_status()
+            detail_text = f"Total: {detail_status['total_processed']} | Threshold: {detail_status['threshold']:.3f}"
+            draw_text_overlay(frame, detail_text, (10, frame.shape[0] - 30), 
+                            font_scale=0.3, thickness=1, alpha=0.5, text_color=(255, 255, 255))
 
-       
             if frame_added:
                 frame_index += 1
                 if frame_index % FRAME_COUNT == 0:
                     batch_index += 1
 
-          
             print(f"Displaying frame {frame_index}")
             cv2.imshow("Anomaly Detection", frame)
             key_pressed = cv2.waitKey(1) & 0xFF 
@@ -220,7 +272,6 @@ def receive_and_display_video():
             if buffer_key in received_packets:
                 del received_packets[buffer_key]
 
-    
         if pause_event.is_set():
             key_pressed = cv2.waitKey(30) & 0xFF
             if key_pressed == ord('p'):
@@ -232,7 +283,6 @@ def receive_and_display_video():
     process_queue.put((None, -1))  
     cv2.destroyAllWindows()
     sock.close()
-    print("🛑 Connection closed.")
 
 def process_inference(feat_model, model):
     batch_frames = []
@@ -263,14 +313,12 @@ def process_inference(feat_model, model):
                 output = torch.sigmoid(logits).item()
                 print(f"Batch {batch_idx}: Prob {output:.4f}, Processing time: {time() - start_time:.3f}s")
             
-         
             result_queue.put((batch_idx, output))
 
             batch_frames.clear()
             current_batch_index += 1
 
 if __name__ == '__main__':
-  
     model = Model().to(DEVICE)
     if os.path.exists(CHECKPOINT_PATH):
         print("Loading checkpoint...")
@@ -282,7 +330,6 @@ if __name__ == '__main__':
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
- 
     thread_display = threading.Thread(target=receive_and_display_video)
     thread_inference = threading.Thread(target=process_inference, args=(feat_model, model))
 
