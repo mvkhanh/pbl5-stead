@@ -14,6 +14,7 @@ from torchvision.transforms import CenterCrop, Normalize, Compose, Lambda
 from pytorchvideo.transforms import ApplyTransformToKey, ShortSideScale
 from skimage.metrics import structural_similarity as ssim
 from model import Model
+from consecutive_detector import ConsecutiveDetector
 
 from option import parse_args
 args = parse_args()
@@ -72,68 +73,6 @@ print(f"📡 Listening for UDP video at {SERVER_IP}:{PORT}...")
 buffer = {}
 expected_packets = {}
 received_packets = {}
-
-class ConsecutiveDetector:
-    def __init__(self, threshold, consecutive_required):
-        self.threshold = threshold
-        self.consecutive_required = consecutive_required
-        self.consecutive_count = 0
-        self.last_batch_idx = -1
-        self.anomaly_detected = False
-        self.recent_results = []  
-        self.total_processed = 0
-        
-    def update(self, batch_idx, prob):
-        self.total_processed += 1
-        
-        if self.last_batch_idx == -1 or batch_idx == self.last_batch_idx + 1:
-            if prob > self.threshold:
-                self.consecutive_count += 1
-            else:
-                if self.consecutive_count > 0:
-                    self.consecutive_count = 0
-                
-                if len(self.recent_results) >= 2 and all(r <= self.threshold for r in self.recent_results[-2:]):
-                    self.anomaly_detected = False
-        else:
-            self.consecutive_count = 0 if prob <= self.threshold else 1
-            self.anomaly_detected = False
-            
-        if self.consecutive_count >= self.consecutive_required:
-            self.anomaly_detected = True
-        
-        self.recent_results.append(prob)
-        if len(self.recent_results) > 10:
-            self.recent_results.pop(0)
-            
-        self.last_batch_idx = batch_idx
-        
-    def get_status(self):
-        return self.anomaly_detected, self.consecutive_count
-    
-    def get_detailed_status(self):
-        return {
-            'anomaly_detected': self.anomaly_detected,
-            'consecutive_count': self.consecutive_count,
-            'consecutive_required': self.consecutive_required,
-            'threshold': self.threshold,
-            'last_batch_idx': self.last_batch_idx,
-            'total_processed': self.total_processed,
-            'recent_results': self.recent_results.copy()
-        }
-    
-    def reset(self):
-        self.consecutive_count = 0
-        self.last_batch_idx = -1
-        self.anomaly_detected = False
-        self.recent_results.clear()
-        self.total_processed = 0
-    
-    def set_threshold(self, new_threshold):
-        self.threshold = new_threshold
-    
-    def set_consecutive_required(self, new_required):
-        self.consecutive_required = new_required
 
 detector = ConsecutiveDetector(THRESHOLD, CONSECUTIVE_REQUIRED)
 
