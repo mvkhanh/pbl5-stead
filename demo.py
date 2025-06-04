@@ -59,7 +59,7 @@ CHECKPOINT_PATH = "saved_models/888tiny.pkl"
 THRESHOLD = 0.6934
 FRAME_COUNT = 16  
 SIMILARITY_THRESHOLD = 0.7
-CONSECUTIVE_REQUIRED = 3  # Số batch liên tiếp cần thiết để phát hiện phạm pháp
+CONSECUTIVE_REQUIRED = 5  
 
 process_queue = queue.Queue(maxsize=FRAME_COUNT * 3)
 result_queue = queue.Queue(maxsize=100)
@@ -105,7 +105,7 @@ def receive_and_display_video():
     print("Waiting for first UDP packet...")
     while True:
         packet, addr = sock.recvfrom(65535)
-        print(f"Received packet from addr: {addr}")
+        # print(f"Received packet from addr: {addr}")
         if not isinstance(addr, tuple) or len(addr) != 2:
             print(f"Invalid addr format: {addr}, skipping...")
             continue
@@ -154,7 +154,7 @@ def receive_and_display_video():
             try:
                 process_queue.put_nowait((frame, frame_index))
                 frame_added = True
-                print(f"Frame {frame_index} added to process_queue, queue size: {process_queue.qsize()}")
+                # print(f"Frame {frame_index} added to process_queue, queue size: {process_queue.qsize()}")
             except queue.Full:
                 print(f"Queue full, skipping frame {frame_index}")
 
@@ -169,23 +169,24 @@ def receive_and_display_video():
             current_batch = frame_index // FRAME_COUNT
             
             anomaly_detected, consecutive_count = detector.get_status()
-            
+            prob = detector.get_detailed_status()['last_prob']
             if anomaly_detected:
                 color = (0, 0, 255)
                 status = "Khong binh thuong"
-                anomaly_text = f"Batch: {current_batch} | Consecutive: {consecutive_count}/{CONSECUTIVE_REQUIRED} | {status}"
+                anomaly_text = f"Batch: {current_batch} | Consecutive: {consecutive_count}/{CONSECUTIVE_REQUIRED}| Prob: {prob:.3f} | {status}"
             else:
                 color = (0, 255, 0)
                 status = "Binh thuong"
                 if consecutive_count > 0:
-                    anomaly_text = f"Batch: {current_batch} | Consecutive: {consecutive_count}/{CONSECUTIVE_REQUIRED} | Watching..."
+                    anomaly_text = f"Batch: {current_batch} | Consecutive: {consecutive_count}/{CONSECUTIVE_REQUIRED}| Prob: {prob:.3f} | Watching..."
                 else:
-                    anomaly_text = f"Batch: {current_batch} | {status}"
+                    anomaly_text = f"Batch: {current_batch}| Prob: {prob:.3f} | {status}"
             
             cv2.rectangle(frame, (0, 0), (frame.shape[1]-2, frame.shape[0]-2), color, 2)
             draw_text_overlay(frame, anomaly_text, (10, 20), font_scale=0.4, thickness=1, alpha=0.6, text_color=color)
             
             detail_status = detector.get_detailed_status()
+            print("Threshold : ", detail_status['threshold'])
             detail_text = f"Total: {detail_status['total_processed']} | Threshold: {detail_status['threshold']:.3f}"
             draw_text_overlay(frame, detail_text, (10, frame.shape[0] - 30), 
                             font_scale=0.3, thickness=1, alpha=0.5, text_color=(255, 255, 255))

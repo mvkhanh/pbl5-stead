@@ -15,6 +15,7 @@ class ConsecutiveDetector:
         self.anomaly_detected = False
         self.recent_results = []  
         self.total_processed = 0
+        self.last_prob = 0.0
         print(f" ConsecutiveDetector initialized: threshold={threshold}, required={consecutive_required}")
         
     def update(self, batch_idx, prob):
@@ -56,6 +57,7 @@ class ConsecutiveDetector:
             self.recent_results.pop(0)
             
         self.last_batch_idx = batch_idx
+        self.last_prob = prob
         print(f" Current state: consecutive={self.consecutive_count}, anomaly={self.anomaly_detected}")
         
     def get_status(self):
@@ -71,7 +73,9 @@ class ConsecutiveDetector:
             'threshold': self.threshold,
             'last_batch_idx': self.last_batch_idx,
             'total_processed': self.total_processed,
-            'recent_results': self.recent_results.copy()
+            'recent_results': self.recent_results.copy(),
+            'last_prob': self.last_prob
+            
         }
     
     def reset(self):
