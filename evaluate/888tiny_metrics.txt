@@ -1,0 +1,8 @@
+ROC AUC: 0.8887
+PR AUC: 0.8936
+Average Precision: 0.8940
+Best F1 Threshold: 0.7010
+Best F1 Score: 0.8151
+Confusion Matrix:
+[[133  17]
+ [ 32 108]]

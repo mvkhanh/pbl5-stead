@@ -1,7 +1,13 @@
-# STEAD: Spatio-Temporal Efficient Anomaly Detection for Time and Compute Sensitive Applications
+# Criminal Behavior Detection System from Surveillance Cameras
 
- [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/stead-spatio-temporal-efficient-anomaly/anomaly-detection-in-surveillance-videos-on)](https://paperswithcode.com/sota/anomaly-detection-in-surveillance-videos-on?p=stead-spatio-temporal-efficient-anomaly)  
-This repo is the official implementation of [STEAD: Spatio-Temporal Efficient Anomaly Detection for Time and Compute Sensitive Applications](https://arxiv.org/abs/2503.07942)  
+This project is a full-stack solution for detecting criminal or abnormal behaviors from surveillance camera footage using deep learning, specifically the STEAD model. It includes:
+
+- An AI model for anomaly detection using X3D features.
+- Feature extraction code and training pipeline.
+- A web-based dashboard for monitoring, reviewing, and managing detected activities.
+- Integration with real-time camera streams.
+
+---
 
 ### Pretrained models available in the saved_models folder
 
@@ -17,6 +23,7 @@ Feature extraction code also available for modification
         python test.py
 #### Train: Modify the option.py and run 
         python main.py
+
 
 ## Citation
     @misc{gao2025steadspatiotemporalefficientanomaly,
